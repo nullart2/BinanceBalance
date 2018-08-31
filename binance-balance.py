@@ -16,6 +16,8 @@ import os.path
 import ConfigParser
 from collections import deque
 from scipy.signal import detrend
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2TkAgg
 
 def round_decimal(num, decimal):
     '''
@@ -32,44 +34,27 @@ def round_decimal(num, decimal):
 
 
 class TrendLine:
-    def __init__(self, window, dt):
+    def __init__(self, maxlength):
         self.t = deque()
         self.y = deque()
+        self.slow_ema = deque()
+        self.fast_ema=deque()
+        self.macd = deque()
+        self.macd_ema = deque()
+        self.ppo = deque()
+        self.ppo_ema  = deque()
+        self.rsi = deque() #do I need this, or can I keep a single point?
+        self.stoch_rsi = deque()
+        
         self.window = window
-        self.dt = dt
-        self.trend = 0
 
     def append(self,t,y):
-        if self.t and t - self.t[0] > self.window:
+        if len(self.t) == maxlength:
             self.t.popleft()
             self.y.popleft()
         self.t.append(t)
         self.y.append(y)
 
-    def trend(self):
-        p = np.polyfit(self.t, self.y, 2)
-        localstd = self.local_stdev(self.t,self.y,self.dt)
-        dy = p[0]*(2*self.t[-1]*self.dt + self.dt**2) + p[1]*self.dt
-        if np.absolute(dy) - localstd > 0:
-            if dy > 0:
-                self.trend = 1
-            else:
-                self.trend = -1
-        else:
-            self.trend = 0
-    
-    def local_stdev(self):
-        start = self.t[0]
-        end = self.t[-1] - dt
-        t = np.array(self.t)
-        y = np.array(self.y)
-        localstd = []
-        while start < end:
-            inds = [(t >= start) * (t < start + self.dt)]
-            localy = y[inds]
-            localstd.append(np.std(localy))
-            start += dt
-        return np.min(localstd)
     
 class BalanceGUI(tk.Frame):
     def __init__(self, parent, coins):
@@ -177,6 +162,37 @@ class BalanceGUI(tk.Frame):
         self.trades_count_display = tk.Label(self.stats_view, textvariable=self.trades_count)
         self.trades_count_display.grid(row=1, column=3, sticky=tk.E + tk.W)
 
+
+        self.analysis_frame = tk.LabelFrame(parent,text='Technical Analysis')
+        self.analysis_frame.columnconfigure(0, weight=4)
+        self.analysis_frame.columnconfigure(1, weight=1)
+        self.priceplot = Figure(figsize=(8,2), dpi=100)
+        self.pricecanvas = FigureCanvasTkAgg(self.priceplot, master=self.analysis_frame)
+        self.pricecanvas.get_tk_widget().grid(row=0,column=0,sticky=tk.E+tk.W)
+        self.pricecanvas._tkcanvas.config(highlightthickness=1,highlightcolor='black',highlightbackground='black')
+        
+
+        self.indicatorplot = Figure(figsize=(8,2), dpi=100)
+        self.indicatorcanvas = FigureCanvasTkAgg(self.indicatorplot, master=self.analysis_frame)
+        self.indicatorcanvas.get_tk_widget().grid(row=1,column=0,sticky=tk.E+tk.W)
+        self.indicatorcanvas._tkcanvas.config(highlightthickness=1,highlightcolor='black',highlightbackground='black')
+
+        self.plotcoin = tk.StringVar()
+        self.plotcoin.set('None')
+        self.coinopts = tk.OptionMenu(self.analysis_frame, self.plotcoin, *[coin for coin in self.coins['coin'] if coin != self.trade_currency])
+        self.coinopts.grid(row=0, column=1, stick=tk.E+tk.W+tk.N+tk.S)
+
+        self.plotind = tk.StringVar()
+        self.plotind.set('None')
+        options = ['RSI',
+                   'MACD',
+                   'PPO',
+                   'OBV']
+        self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *[option for option in options])
+        self.indopts.grid(row=1, column=1, stick=tk.E+tk.W+tk.N+tk.S)
+
+        self.analysis_frame.grid(row=2,column=0,columnspan=2,sticky=tk.E+tk.W)
+
     def read_config(self):
         s_to_ms = 1000
         config = ConfigParser.RawConfigParser(allow_no_value=False)
@@ -271,6 +287,11 @@ class BalanceGUI(tk.Frame):
             self.display_error('Login Error', e.message)
         else:
             try:
+                root2 = tk.Toplevel(self.parent)
+                root2.title("Window 2")
+
+                Label2 = tk.Label(root2,text="ABC" ,width=60)
+                Label2.grid(row=0, column=0)
                 self.populate_portfolio()
             except BinanceAPIException as e:
                 self.display_error('API Error', e.message, quit_on_exit=True)
