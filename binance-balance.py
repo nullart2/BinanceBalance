@@ -46,10 +46,10 @@ class TrendLine:
         self.rsi = deque() #do I need this, or can I keep a single point?
         self.stoch_rsi = deque()
         
-        self.window = window
+        self.maxlength = maxlength
 
     def append(self,t,y):
-        if len(self.t) == maxlength:
+        if len(self.t) == self.maxlength:
             self.t.popleft()
             self.y.popleft()
         self.t.append(t)
@@ -287,11 +287,6 @@ class BalanceGUI(tk.Frame):
             self.display_error('Login Error', e.message)
         else:
             try:
-                root2 = tk.Toplevel(self.parent)
-                root2.title("Window 2")
-
-                Label2 = tk.Label(root2,text="ABC" ,width=60)
-                Label2.grid(row=0, column=0)
                 self.populate_portfolio()
             except BinanceAPIException as e:
                 self.display_error('API Error', e.message, quit_on_exit=True)
@@ -384,7 +379,7 @@ class BalanceGUI(tk.Frame):
                        'last_placement':    None,
                        'last_execution':    None
                        }
-                self.trendlines[coin] = TrendLine(1,1)
+                self.trendlines[coin] = TrendLine(1)
             else:
                 fixed_balance = self.coins.loc[self.coins['coin'] == coin]['fixed_balance']
                 row = {'coin':              coin,
