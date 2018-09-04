@@ -33,27 +33,34 @@ def round_decimal(num, decimal):
     return '{0:.8f}'.format(x).rstrip('0').rstrip('.')
 
 
-class TrendLine:
-    def __init__(self, maxlength):
-        self.t = deque()
-        self.y = deque()
-        self.slow_ema = deque()
-        self.fast_ema=deque()
-        self.macd = deque()
-        self.macd_ema = deque()
-        self.ppo = deque()
-        self.ppo_ema  = deque()
-        self.rsi = deque() #do I need this, or can I keep a single point?
-        self.stoch_rsi = deque()
-        
-        self.maxlength = maxlength
+class TechnicalAnalysis:
+    def __init__(self, symbol, client):
+        if symbol == 'ETHBTC':
+            data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_1MINUTE, '26 hours ago UTC'),dtype=np.float64)
+            keep = data[:,0:6]
+            self.df = pd.DataFrame(data=keep, index=None, columns=['time','open','high','low','close','volume'])
+            self.df['average'] = self.df.apply(lambda row: 0.5*(row.low + row.high), axis=1)
+            self.df['ema26'] = self.ema(26*60, self.df['average'].values)
+            self.df['ema12'] = self.ema(12*60, self.df['average'].values)
+            self.df['macd'] = self.df.apply(lambda row: 0.5*(row.ema12 + row.ema26), axis=1)
+            self.df['emamacd'] = self.ema(9*60, self.df['macd'].values)
 
-    def append(self,t,y):
-        if len(self.t) == self.maxlength:
-            self.t.popleft()
-            self.y.popleft()
-        self.t.append(t)
-        self.y.append(y)
+    def ema(self, period, data):
+        N = len(data)
+        ema = np.zeros(N)
+        ema[0] = data[0]
+        factor = 2.0/(1 + period)
+        for i in range(1,N):
+            ema[i] = factor * data[i] + (1 - factor) * ema[i-1]
+        return ema
+            
+    def append(self, kline):
+        pass
+##        if len(self.t) == self.maxlength:
+##            self.t.popleft()
+##            self.y.popleft()
+##        self.t.append(t)
+##        self.y.append(y)
 
     
 class BalanceGUI(tk.Frame):
@@ -292,8 +299,13 @@ class BalanceGUI(tk.Frame):
                 self.display_error('API Error', e.message, quit_on_exit=True)
             else:
                 self.start_websockets()
+                self.populate_price_history()
+                self.process_queue(flush=True)
             
-            
+    def populate_price_history(self):
+        for coin in self.coins['coin']:
+            if coin != self.trade_currency:
+                self.trendlines[coin] = TechnicalAnalysis(coin+self.trade_currency, self.client)
             
     def start_websockets(self):
         '''
@@ -379,7 +391,6 @@ class BalanceGUI(tk.Frame):
                        'last_placement':    None,
                        'last_execution':    None
                        }
-                self.trendlines[coin] = TrendLine(1)
             else:
                 fixed_balance = self.coins.loc[self.coins['coin'] == coin]['fixed_balance']
                 row = {'coin':              coin,
@@ -502,9 +513,10 @@ class BalanceGUI(tk.Frame):
             self.messages_string.set('Up to Date')
 
     def update_trends(self, msg):
-        if msg['k']['x']:
-            coin = msg['s'][:-len(self.trade_coin)]
-            self.trendlines[coin].append(float(msg['k']['T'])/1000., float(msg['k']['c'])/1000.)
+        pass
+        #if msg['k']['x']:
+        #    coin = msg['s'][:-len(self.trade_coin)]
+        #    self.trendlines[coin].append(float(msg['k']['T'])/1000., float(msg['k']['c'])/1000.)
 
     def update_trades(self, msg):
         ''' Update balances whenever a partial execution occurs '''
