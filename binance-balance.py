@@ -35,15 +35,26 @@ def round_decimal(num, decimal):
 
 class TechnicalAnalysis:
     def __init__(self, symbol, client):
-        if symbol == 'ETHBTC':
-            data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_1MINUTE, '26 hours ago UTC'),dtype=np.float64)
-            keep = data[:,0:6]
-            self.df = pd.DataFrame(data=keep, index=None, columns=['time','open','high','low','close','volume'])
-            self.df['average'] = self.df.apply(lambda row: 0.5*(row.low + row.high), axis=1)
-            self.df['ema26'] = self.ema(26*60, self.df['average'].values)
-            self.df['ema12'] = self.ema(12*60, self.df['average'].values)
-            self.df['macd'] = self.df.apply(lambda row: 0.5*(row.ema12 + row.ema26), axis=1)
-            self.df['emamacd'] = self.ema(9*60, self.df['macd'].values)
+
+        self.t = deque()
+        self.ohlc = deque()
+        self.ema26 = deque()
+        self.ema12 = deque()
+        self.macd = deque()
+        self.macd9 = deque()
+        
+        data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_1MINUTE, '26 hours ago UTC'),dtype=np.float64)
+        ema26 = self.ema(26*60, data[:,4])
+        ema12 = self.ema(12*60, data[:,4])
+        macd = ema12 - ema26
+        macd9 = self.ema(9*60, macd)
+        for row, e26, e12, m, m9 in zip(data, ema26, ema12, macd, macd9):
+            self.t.append(row[0])
+            self.ohlc.append([row[1], row[2], row[3], row[4]])
+            self.ema26.append(e26)
+            self.ema12.append(e12)
+            self.macd.append(m)
+            self.macd9.append(m9)
 
     def ema(self, period, data):
         N = len(data)
@@ -53,15 +64,24 @@ class TechnicalAnalysis:
         for i in range(1,N):
             ema[i] = factor * data[i] + (1 - factor) * ema[i-1]
         return ema
-            
-    def append(self, kline):
-        pass
-##        if len(self.t) == self.maxlength:
-##            self.t.popleft()
-##            self.y.popleft()
-##        self.t.append(t)
-##        self.y.append(y)
 
+    def update_ema(self, period, oldema, newprice):
+        factor = 2.0/(1 + period)
+        return factor * newprice + (1.0 - factor) * oldema
+            
+    def append(self, msg):
+        self.t.popleft()
+        self.ohlc.popleft()
+        self.ema26.popleft()
+        self.ema12.popleft()
+        self.macd.popleft()
+        self.macd9.popleft()
+        
+        self.ohlc.append([float(msg['k']['o']), float(msg['k']['h']), float(msg['k']['l']), float(msg['k']['c'])])
+        self.ema26.append(self.update_ema(26*60, self.ema26[-1], float(msg['k']['c'])))
+        self.ema12.append(self.update_ema(12*60, self.ema26[-1], float(msg['k']['c'])))
+        self.macd.append(self.ema12[-1] - self.ema26[-1])
+        self.macd.append(self.update_ema(9*60, self.macd9[-1], self.macd[-1]))
     
 class BalanceGUI(tk.Frame):
     def __init__(self, parent, coins):
@@ -301,9 +321,40 @@ class BalanceGUI(tk.Frame):
                 self.start_websockets()
                 self.populate_price_history()
                 self.process_queue(flush=True)
-            
+                self.update_context()
+                self.parent.after_idle(self.process_queue)
+
+    def update_context(self):
+        self.progressbar.destroy()
+        self.progresslabel.destroy()
+
+        self.automate=tk.BooleanVar()
+        self.automate.set(False)
+        self.automate_text = tk.StringVar()
+        self.automate_text.set('Start Automation')
+        self.toggle_automate = tk.Button(self.controls_view,
+                                         textvariable=self.automate_text,
+                                         command=lambda: self.automation(toggle=True))
+        self.toggle_automate.grid(row=0, column=0, rowspan=2, columnspan=2, sticky=tk.E + tk.W + tk.N + tk.S)
+        self.sell_button = tk.Button(self.controls_view,
+                                     text='Execute Sells',
+                                     command=self.execute_sells)
+        self.sell_button.grid(row=0, column=2, columnspan=2, sticky=tk.E + tk.W)
+        self.buy_button = tk.Button(self.controls_view,
+                                    text='Execute Buys',
+                                    command=self.execute_buys)
+        self.buy_button.grid(row=1, column=2, columnspan=2, sticky=tk.E + tk.W)
+
+        
     def populate_price_history(self):
+        progress = 0
+        self.progress_var.set(progress)
         for coin in self.coins['coin']:
+            self.progressbar.update()
+            progress += 1
+            self.progress_var.set(progress)
+            self.updatetext.set('Fetching {0} price history'.format(coin))
+            self.progresslabel.update()
             if coin != self.trade_currency:
                 self.trendlines[coin] = TechnicalAnalysis(coin+self.trade_currency, self.client)
             
@@ -323,7 +374,6 @@ class BalanceGUI(tk.Frame):
             self.sockets[symbol] = self.bm.start_symbol_ticker_socket(symbol, self.queue_msg)
             self.sockets[symbol+'kline'] = self.bm.start_kline_socket(symbol, self.queue_msg)
         self.sockets['user'] = self.bm.start_user_socket(self.queue_msg)
-        self.parent.after_idle(self.process_queue)
 
     def initalize_records(self):
         self.records = dict()
@@ -351,20 +401,20 @@ class BalanceGUI(tk.Frame):
         self.secret_entry.destroy()
         self.login.destroy()
         
-        updatetext = tk.StringVar()
-        updatetext.set('Initializing')
-        self.progresslabel = tk.Label(self.controls_view, textvariable=updatetext)
+        self.updatetext = tk.StringVar()
+        self.updatetext.set('Initializing')
+        self.progresslabel = tk.Label(self.controls_view, textvariable=self.updatetext)
         self.progresslabel.grid(row=1, column=0, columnspan=4, sticky=tk.E + tk.W)
-        progress_var = tk.DoubleVar()
+        self.progress_var = tk.DoubleVar()
         progress = 0
-        progress_var.set(progress)
-        self.progressbar = ttk.Progressbar(self.controls_view, variable=progress_var, maximum=len(self.coins))
+        self.progress_var.set(progress)
+        self.progressbar = ttk.Progressbar(self.controls_view, variable=self.progress_var, maximum=len(self.coins))
         self.progressbar.grid(row=0, column=0, columnspan=4, sticky=tk.E + tk.W)
         for coin in self.coins['coin']:
             self.progressbar.update()
             progress += 1
-            progress_var.set(progress)
-            updatetext.set('Fetching {0} account information'.format(coin))
+            self.progress_var.set(progress)
+            self.updatetext.set('Fetching {0} account information'.format(coin))
             self.progresslabel.update()
             pair = coin+trade_currency
             balance = self.client.get_asset_balance(asset=coin)
@@ -436,27 +486,9 @@ class BalanceGUI(tk.Frame):
                                           )
                                   )
             i += 1
-        updatetext.set('Testing connection'.format(coin))
+        self.updatetext.set('Testing connection'.format(coin))
         self.dryrun()
-        self.progressbar.destroy()
-        self.progresslabel.destroy()
 
-        self.automate=tk.BooleanVar()
-        self.automate.set(False)
-        self.automate_text = tk.StringVar()
-        self.automate_text.set('Start Automation')
-        self.toggle_automate = tk.Button(self.controls_view,
-                                         textvariable=self.automate_text,
-                                         command=lambda: self.automation(toggle=True))
-        self.toggle_automate.grid(row=0, column=0, rowspan=2, columnspan=2, sticky=tk.E + tk.W + tk.N + tk.S)
-        self.sell_button = tk.Button(self.controls_view,
-                                     text='Execute Sells',
-                                     command=self.execute_sells)
-        self.sell_button.grid(row=0, column=2, columnspan=2, sticky=tk.E + tk.W)
-        self.buy_button = tk.Button(self.controls_view,
-                                    text='Execute Buys',
-                                    command=self.execute_buys)
-        self.buy_button.grid(row=1, column=2, columnspan=2, sticky=tk.E + tk.W)
         
     def update_status(self):
         '''Update the statistics frame whenever a change occurs in balance or price'''
@@ -513,10 +545,9 @@ class BalanceGUI(tk.Frame):
             self.messages_string.set('Up to Date')
 
     def update_trends(self, msg):
-        pass
-        #if msg['k']['x']:
-        #    coin = msg['s'][:-len(self.trade_coin)]
-        #    self.trendlines[coin].append(float(msg['k']['T'])/1000., float(msg['k']['c'])/1000.)
+        if msg['k']['x']:
+            coin = msg['s'][:-len(self.trade_coin)]
+            self.trendlines[coin].append(msg)
 
     def update_trades(self, msg):
         ''' Update balances whenever a partial execution occurs '''
