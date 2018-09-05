@@ -42,19 +42,38 @@ class TechnicalAnalysis:
         self.ema12 = deque()
         self.macd = deque()
         self.macd9 = deque()
+        self.signal = deque()
         
         data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_1MINUTE, '26 hours ago UTC'),dtype=np.float64)
         ema26 = self.ema(26*60, data[:,4])
         ema12 = self.ema(12*60, data[:,4])
         macd = ema12 - ema26
         macd9 = self.ema(9*60, macd)
-        for row, e26, e12, m, m9 in zip(data, ema26, ema12, macd, macd9):
+        signal = macd - macd9
+        for row, e26, e12, m, m9, s in zip(data, ema26, ema12, macd, macd9, signal):
             self.t.append(row[0])
             self.ohlc.append([row[1], row[2], row[3], row[4]])
             self.ema26.append(e26)
             self.ema12.append(e12)
             self.macd.append(m)
             self.macd9.append(m9)
+            self.signal.append(s)
+        self.get_initial_trend()
+
+    def get_initial_trend(self):
+        trend = 0
+        if self.macd[-1] > 0:
+            trend = 1
+        else:
+            trend = -1
+        s0 = self.signal[0]
+        for s in self.signal:
+            if s0 >= 0 and s < 0:
+                trend = -1
+            elif s0 <= 0 and s > 0:
+                trend = 1
+            s0 = s
+        self.trend = trend
 
     def ema(self, period, data):
         N = len(data)
@@ -76,12 +95,18 @@ class TechnicalAnalysis:
         self.ema12.popleft()
         self.macd.popleft()
         self.macd9.popleft()
+        self.signal.popleft()
         
         self.ohlc.append([float(msg['k']['o']), float(msg['k']['h']), float(msg['k']['l']), float(msg['k']['c'])])
         self.ema26.append(self.update_ema(26*60, self.ema26[-1], float(msg['k']['c'])))
         self.ema12.append(self.update_ema(12*60, self.ema26[-1], float(msg['k']['c'])))
         self.macd.append(self.ema12[-1] - self.ema26[-1])
-        self.macd.append(self.update_ema(9*60, self.macd9[-1], self.macd[-1]))
+        self.macd9.append(self.update_ema(9*60, self.macd9[-1], self.macd[-1]))
+        self.signal.append(self.macd[-1] - self.macd9[-1])
+        if self.trend == -1 and self.signal[-1] > 0:
+            seld.trend = 1
+        elif self.trend == 1 and self.signal[-1] < 0:
+            self.trend = -1
     
 class BalanceGUI(tk.Frame):
     def __init__(self, parent, coins):
@@ -98,7 +123,6 @@ class BalanceGUI(tk.Frame):
         self.trades = []
         self.headers = self.column_headers()
         self.read_config()
-        self.initalize_records()
         
         #portfolio display
         self.portfolio_view = tk.LabelFrame(parent, text='Portfolio')
@@ -158,7 +182,7 @@ class BalanceGUI(tk.Frame):
             self.stats_view.columnconfigure(i,weight=1, uniform='stats')
 
         
-        self.trade_currency_value_label = tk.Label(self.stats_view, text=self.trade_currency + ' Value:', relief='ridge')
+        self.trade_currency_value_label = tk.Label(self.stats_view, text='Portfolio Value:', relief='ridge')
         self.trade_currency_value_label.grid(row=0, column=0, sticky=tk.E + tk.W)
         self.trade_currency_value_string = tk.StringVar()
         self.trade_currency_value_string.set('0')
@@ -267,9 +291,6 @@ class BalanceGUI(tk.Frame):
             else:
                 with open('trade_history.csv','w') as f:
                     df.to_csv(f, sep=',', header=True, index=False)
-        for coin in self.coins['coin']:
-            pair = coin+self.trade_currency
-            self.records[pair].close()
         try:
             self.bm.close()
             reactor.stop()
@@ -374,12 +395,7 @@ class BalanceGUI(tk.Frame):
             self.sockets[symbol] = self.bm.start_symbol_ticker_socket(symbol, self.queue_msg)
             self.sockets[symbol+'kline'] = self.bm.start_kline_socket(symbol, self.queue_msg)
         self.sockets['user'] = self.bm.start_user_socket(self.queue_msg)
-
-    def initalize_records(self):
-        self.records = dict()
-        for coin in self.coins['coin']:
-            pair = coin+self.trade_currency
-            self.records[pair] = open(pair + '.csv','a+',1) #unbuffered
+        self.sockets['exchange_rate'] = self.bm.start_symbol_ticker_socket('BTCUSDT', self.queue_msg)
             
     def populate_portfolio(self):
         '''
@@ -410,6 +426,7 @@ class BalanceGUI(tk.Frame):
         self.progress_var.set(progress)
         self.progressbar = ttk.Progressbar(self.controls_view, variable=self.progress_var, maximum=len(self.coins))
         self.progressbar.grid(row=0, column=0, columnspan=4, sticky=tk.E + tk.W)
+        self.exchange_rate = float(self.client.get_symbol_ticker(symbol='BTCUSDT')['price'])
         for coin in self.coins['coin']:
             self.progressbar.update()
             progress += 1
@@ -492,10 +509,10 @@ class BalanceGUI(tk.Frame):
         
     def update_status(self):
         '''Update the statistics frame whenever a change occurs in balance or price'''
-        value = '{0:.8f}'.format(self.total)
+        value = '{0:.2f}'.format(self.total*self.exchange_rate)
         diff = np.diff(self.coins['actual'].values - self.coins['allocation'].values)
         imbalance = '{0:.2f}%'.format(np.sum(np.absolute(diff)))
-        self.trade_currency_value_string.set(value)
+        self.trade_currency_value_string.set('$'+value)
         self.imbalance_string.set(imbalance)
         
     def queue_msg(self, msg):
@@ -601,31 +618,26 @@ class BalanceGUI(tk.Frame):
         coin = msg['s'][:-len(self.trade_currency)]
         ask = float(msg['a'])
         bid = float(msg['b'])
-        askprice = round_decimal(ask,self.coins.loc[self.coins['coin'] == coin, 'ticksize'].values[0])
-        bidprice = round_decimal(bid,self.coins.loc[self.coins['coin'] == coin, 'ticksize'].values[0])
-        self.portfolio.set(coin, column='Ask', value=askprice)
-        self.coins.loc[self.coins['coin'] == coin, 'askprice'] = ask
-        self.portfolio.set(coin, column='Bid', value=bidprice)
-        self.coins.loc[self.coins['coin'] == coin, 'bidprice'] = bid
-        value = (self.coins.loc[self.coins['coin'] == coin, 'exchange_balance'].values[0] +
-                 self.coins.loc[self.coins['coin'] == coin, 'fixed_balance'].values[0]) * ask
-        self.coins.loc[self.coins['coin'] == coin, 'value'] = value
-        self.total = np.sum(self.coins['value'])
-        self.coins['actual'] = self.coins.apply(lambda row: 100.0 * row.value / self.total, axis=1)
-        for row in self.coins.itertuples():
-            coin = row.coin
-            actual = '{0:.2f}%'.format(self.coins.loc[self.coins['coin'] == coin, 'actual'].values[0])
-            self.portfolio.set(coin, column='Actual', value=actual)
-        self.update_actions()
-        self.update_status()
-        self.print_price(msg)
-
-    def print_price(self, msg):
-        pair = msg['s']
-        avg_price = float(msg['w'])
-        time = float(msg['E'])
-        mid_price = (float(msg['b']) + float(msg['a']))/2.0
-        self.records[pair].write('{0},{1},{2}\n'.format(time,avg_price,mid_price))
+        if msg['s'] == 'BTCUSDT':
+            self.exchange_rate = (ask + bid)/2.0
+        else:
+            askprice = round_decimal(ask,self.coins.loc[self.coins['coin'] == coin, 'ticksize'].values[0])
+            bidprice = round_decimal(bid,self.coins.loc[self.coins['coin'] == coin, 'ticksize'].values[0])
+            self.portfolio.set(coin, column='Ask', value=askprice)
+            self.coins.loc[self.coins['coin'] == coin, 'askprice'] = ask
+            self.portfolio.set(coin, column='Bid', value=bidprice)
+            self.coins.loc[self.coins['coin'] == coin, 'bidprice'] = bid
+            value = (self.coins.loc[self.coins['coin'] == coin, 'exchange_balance'].values[0] +
+                     self.coins.loc[self.coins['coin'] == coin, 'fixed_balance'].values[0]) * ask
+            self.coins.loc[self.coins['coin'] == coin, 'value'] = value
+            self.total = np.sum(self.coins['value'])
+            self.coins['actual'] = self.coins.apply(lambda row: 100.0 * row.value / self.total, axis=1)
+            for row in self.coins.itertuples():
+                coin = row.coin
+                actual = '{0:.2f}%'.format(self.coins.loc[self.coins['coin'] == coin, 'actual'].values[0])
+                self.portfolio.set(coin, column='Actual', value=actual)
+            self.update_actions()
+            self.update_status()
 
     def update_actions(self):
         '''
