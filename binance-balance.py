@@ -566,11 +566,13 @@ class BalanceGUI(tk.Frame):
 
     def update_trends(self, msg):
         if msg['k']['x']:
+            print 'appending'
             coin = msg['s'][:-len(self.trade_coin)]
             self.trendlines[coin].append(msg)
             plotcoin = self.plotcoin.get()
             if plotcoin == coin:
                 self.update_plots()
+            print 'done'
 
     def update_plots(self):
         print 'updating plot'
@@ -580,7 +582,7 @@ class BalanceGUI(tk.Frame):
         ind = self.trendlines[coin].signal
         self.priceax = self.priceplot.add_subplot(111)
         self.priceax.xaxis_date()
-        self.priceax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.priceax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M:%S'))
         candlestick_ohlc(self.priceax, ohlc, width=0.005,colorup='g',colordown='r')
         self.priceax.plot(self.trendlines[coin].t, self.trendlines[coin].ema26,self.trendlines[coin].t, self.trendlines[coin].ema12)
         self.pricecanvas.show()
@@ -588,10 +590,11 @@ class BalanceGUI(tk.Frame):
         self.indicatorplot.clf()
         self.indax = self.indicatorplot.add_subplot(111)
         self.indax.xaxis_date()
-        self.indax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.indax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M:%S'))
         self.indax.plot(self.trendlines[coin].t, self.trendlines[coin].signal)
         self.indax.axhline(y=0)
         self.indicatorcanvas.show()
+        print 'done'
         
 
     def update_trades(self, msg):
