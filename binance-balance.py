@@ -566,16 +566,13 @@ class BalanceGUI(tk.Frame):
 
     def update_trends(self, msg):
         if msg['k']['x']:
-            print 'appending'
             coin = msg['s'][:-len(self.trade_coin)]
             self.trendlines[coin].append(msg)
             plotcoin = self.plotcoin.get()
             if plotcoin == coin:
                 self.update_plots()
-            print 'done'
 
     def update_plots(self):
-        print 'updating plot'
         coin = self.plotcoin.get()
         self.priceplot.clf()
         ohlc = self.trendlines[coin].ohlc
@@ -594,7 +591,6 @@ class BalanceGUI(tk.Frame):
         self.indax.plot(self.trendlines[coin].t, self.trendlines[coin].signal)
         self.indax.axhline(y=0)
         self.indicatorcanvas.show()
-        print 'done'
         
 
     def update_trades(self, msg):
