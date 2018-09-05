@@ -18,6 +18,12 @@ from collections import deque
 from scipy.signal import detrend
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2TkAgg
+import matplotlib.pyplot as pl
+from matplotlib.finance import candlestick_ohlc
+import matplotlib.dates as mdates
+import warnings
+import matplotlib.cbook
+warnings.filterwarnings("ignore",category=matplotlib.cbook.mplDeprecation)
 
 def round_decimal(num, decimal):
     '''
@@ -35,7 +41,6 @@ def round_decimal(num, decimal):
 
 class TechnicalAnalysis:
     def __init__(self, symbol, client):
-
         self.t = deque()
         self.ohlc = deque()
         self.ema26 = deque()
@@ -51,8 +56,8 @@ class TechnicalAnalysis:
         macd9 = self.ema(9*60, macd)
         signal = macd - macd9
         for row, e26, e12, m, m9, s in zip(data, ema26, ema12, macd, macd9, signal):
-            self.t.append(row[0])
-            self.ohlc.append([row[1], row[2], row[3], row[4]])
+            self.t.append(mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)))
+            self.ohlc.append([mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)),row[1], row[2], row[3], row[4]])
             self.ema26.append(e26)
             self.ema12.append(e12)
             self.macd.append(m)
@@ -96,15 +101,16 @@ class TechnicalAnalysis:
         self.macd.popleft()
         self.macd9.popleft()
         self.signal.popleft()
-        
-        self.ohlc.append([float(msg['k']['o']), float(msg['k']['h']), float(msg['k']['l']), float(msg['k']['c'])])
+
+        self.t.append(mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)))
+        self.ohlc.append([mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)),float(msg['k']['o']), float(msg['k']['h']), float(msg['k']['l']), float(msg['k']['c'])])
         self.ema26.append(self.update_ema(26*60, self.ema26[-1], float(msg['k']['c'])))
-        self.ema12.append(self.update_ema(12*60, self.ema26[-1], float(msg['k']['c'])))
+        self.ema12.append(self.update_ema(12*60, self.ema12[-1], float(msg['k']['c'])))
         self.macd.append(self.ema12[-1] - self.ema26[-1])
         self.macd9.append(self.update_ema(9*60, self.macd9[-1], self.macd[-1]))
         self.signal.append(self.macd[-1] - self.macd9[-1])
         if self.trend == -1 and self.signal[-1] > 0:
-            seld.trend = 1
+            self.trend = 1
         elif self.trend == 1 and self.signal[-1] < 0:
             self.trend = -1
     
@@ -229,17 +235,14 @@ class BalanceGUI(tk.Frame):
         self.indicatorcanvas._tkcanvas.config(highlightthickness=1,highlightcolor='black',highlightbackground='black')
 
         self.plotcoin = tk.StringVar()
-        self.plotcoin.set('None')
-        self.coinopts = tk.OptionMenu(self.analysis_frame, self.plotcoin, *[coin for coin in self.coins['coin'] if coin != self.trade_currency])
+        self.plotcoin.set('ETH')
+        self.coinopts = tk.OptionMenu(self.analysis_frame, self.plotcoin, *[coin for coin in self.coins['coin'] if coin != self.trade_currency], command=self.update_plots)
         self.coinopts.grid(row=0, column=1, stick=tk.E+tk.W+tk.N+tk.S)
 
         self.plotind = tk.StringVar()
-        self.plotind.set('None')
-        options = ['RSI',
-                   'MACD',
-                   'PPO',
-                   'OBV']
-        self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *[option for option in options])
+        self.plotind.set('MACD')
+        options = ['MACD']
+        self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *[option for option in options], command=self.update_plots)
         self.indopts.grid(row=1, column=1, stick=tk.E+tk.W+tk.N+tk.S)
 
         self.analysis_frame.grid(row=2,column=0,columnspan=2,sticky=tk.E+tk.W)
@@ -565,6 +568,31 @@ class BalanceGUI(tk.Frame):
         if msg['k']['x']:
             coin = msg['s'][:-len(self.trade_coin)]
             self.trendlines[coin].append(msg)
+            plotcoin = self.plotcoin.get()
+            if plotcoin == coin:
+                self.update_plots()
+
+    def update_plots(self):
+        print 'updating plot'
+        coin = self.plotcoin.get()
+        self.priceplot.clf()
+        ohlc = self.trendlines[coin].ohlc
+        ind = self.trendlines[coin].signal
+        self.priceax = self.priceplot.add_subplot(111)
+        self.priceax.xaxis_date()
+        self.priceax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        candlestick_ohlc(self.priceax, ohlc, width=0.005,colorup='g',colordown='r')
+        self.priceax.plot(self.trendlines[coin].t, self.trendlines[coin].ema26,self.trendlines[coin].t, self.trendlines[coin].ema12)
+        self.pricecanvas.show()
+
+        self.indicatorplot.clf()
+        self.indax = self.indicatorplot.add_subplot(111)
+        self.indax.xaxis_date()
+        self.indax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        self.indax.plot(self.trendlines[coin].t, self.trendlines[coin].signal)
+        self.indax.axhline(y=0)
+        self.indicatorcanvas.show()
+        
 
     def update_trades(self, msg):
         ''' Update balances whenever a partial execution occurs '''
