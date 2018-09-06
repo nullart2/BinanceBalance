@@ -555,7 +555,7 @@ class BalanceGUI(tk.Frame):
                 self.get_msg()
         else:
             self.get_msg()
-            self.master.after(1, self.process_queue)
+            self.master.after_idle(self.master.after, 1, self.process_queue)
         n = self.queue.qsize()
         if n > self.ignore_backlog:
             self.messages_string.set('{0} Updates Queued'.format(n))
