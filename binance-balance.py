@@ -1,6 +1,5 @@
 import Tkinter as tk
 import ttk
-import tkFileDialog
 import pandas as pd
 from binance.client import Client
 from binance.websockets import BinanceSocketManager
@@ -40,7 +39,7 @@ def round_decimal(num, decimal):
 
 
 class TechnicalAnalysis:
-    def __init__(self, symbol, client):
+    def __init__(self, symbol, client, slow_window, fast_window, signal_window):
         self.t = deque()
         self.ohlc = deque()
         self.emaslow = deque()
@@ -48,12 +47,15 @@ class TechnicalAnalysis:
         self.macd = deque()
         self.macd9 = deque()
         self.signal = deque()
+        self.slow_window = slow_window
+        self.fast_window = fast_window
+        self.signal_window = signal_window
         
         data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_1MINUTE, '26 hours ago UTC'),dtype=np.float64)
-        emaslow = self.ema(13*60, data[:,4])
-        emafast = self.ema(3*60, data[:,4])
+        emaslow = self.ema(self.slow_window, data[:,4])
+        emafast = self.ema(self.fast_window, data[:,4])
         macd = emafast - emaslow
-        macd9 = self.ema(9*60, macd)
+        macd9 = self.ema(self.signal_window, macd)
         signal = macd - macd9
         for row, eslow, efast, m, m9, s in zip(data, emaslow, emafast, macd, macd9, signal):
             self.t.append(mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)))
@@ -104,10 +106,10 @@ class TechnicalAnalysis:
 
         self.t.append(mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)))
         self.ohlc.append([mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)),float(msg['k']['o']), float(msg['k']['h']), float(msg['k']['l']), float(msg['k']['c'])])
-        self.emaslow.append(self.update_ema(13*60, self.emaslow[-1], float(msg['k']['c'])))
-        self.emafast.append(self.update_ema(3*60, self.emafast[-1], float(msg['k']['c'])))
+        self.emaslow.append(self.update_ema(self.slow_window, self.emaslow[-1], float(msg['k']['c'])))
+        self.emafast.append(self.update_ema(self.fast_window, self.emafast[-1], float(msg['k']['c'])))
         self.macd.append(self.emafast[-1] - self.emaslow[-1])
-        self.macd9.append(self.update_ema(9*60, self.macd9[-1], self.macd[-1]))
+        self.macd9.append(self.update_ema(self.signal_window, self.macd9[-1], self.macd[-1]))
         self.signal.append(self.macd[-1] - self.macd9[-1])
         if self.trend == -1 and self.signal[-1] > 0:
             self.trend = 1
@@ -126,8 +128,6 @@ class BalanceGUI(tk.Frame):
         self.queue = Queue.Queue()
         self.trades_placed = 0
         self.trades_completed = 0
-        self.trades = []
-        self.headers = self.column_headers()
         self.read_config()
         
         #portfolio display
@@ -236,14 +236,17 @@ class BalanceGUI(tk.Frame):
 
         self.plotcoin = tk.StringVar()
         self.plotcoin.set('ETH')
-        self.coinopts = tk.OptionMenu(self.analysis_frame, self.plotcoin, *[coin for coin in self.coins['coin'] if coin != self.trade_currency], command=lambda(opt): self.update_plots)
+        self.coinopts = tk.OptionMenu(self.analysis_frame, self.plotcoin, *[coin for coin in self.coins['coin'] if coin != self.trade_currency])
         self.coinopts.grid(row=0, column=1, sticky=tk.E+tk.W+tk.S+tk.N)
 
         self.plotind = tk.StringVar()
         self.plotind.set('MACD')
         options = ['MACD']
-        self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *options, command=lambda(opt): self.update_plots)
+        self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *options)
         self.indopts.grid(row=1, column=1, sticky=tk.E+tk.W+tk.S+tk.N)
+
+        self.update_button = tk.Button(self.analysis_frame, text='Update Plots', command=self.update_plots)
+        self.update_button.grid(row=2, column=1, stick=tk.E+tk.W)
 
         self.analysis_frame.grid(row=2,column=0,columnspan=2,sticky=tk.E+tk.W)
 
@@ -269,7 +272,11 @@ class BalanceGUI(tk.Frame):
             self.display_error('Config Error',
                                '{0} is not a supported trade type. Use MARKET or LIMIT'.format(trade_type),
                                quit_on_exit=True)
+        self.slow_window = int(config.get('trades', 'slow_window'))
+        self.fast_window = int(config.get('trades', 'fast_window'))
+        self.signal_window = int(config.get('trades', 'signal_window'))
         self.ignore_backlog = int(config.get('websockets', 'ignore_backlog'))
+        
         
     def on_closing(self):
         ''' Check that all trades have executed
@@ -283,17 +290,8 @@ class BalanceGUI(tk.Frame):
 
     def save_and_quit(self):
         '''
-        If trades have been executed in the current session,
-        save them to file. Stop all websockets and exit the GUI.
+        Stop all websockets and exit the GUI.
         '''
-        if self.trades:
-            df = pd.DataFrame(self.trades)
-            if os.path.isfile('trade_history.csv'):
-                with open('trade_history.csv','a') as f:
-                    df.to_csv(f, sep=',', header=False, index=False)
-            else:
-                with open('trade_history.csv','w') as f:
-                    df.to_csv(f, sep=',', header=True, index=False)
         try:
             self.bm.close()
             reactor.stop()
@@ -380,7 +378,7 @@ class BalanceGUI(tk.Frame):
             self.updatetext.set('Fetching {0} price history'.format(coin))
             self.progresslabel.update()
             if coin != self.trade_currency:
-                self.trendlines[coin] = TechnicalAnalysis(coin+self.trade_currency, self.client)
+                self.trendlines[coin] = TechnicalAnalysis(coin+self.trade_currency, self.client, self.slow_window, self.fast_window, self.signal_window)
             
     def start_websockets(self):
         '''
@@ -557,7 +555,7 @@ class BalanceGUI(tk.Frame):
                 self.get_msg()
         else:
             self.get_msg()
-            self.master.after_idle(self.master.after, 1, self.process_queue)
+            self.master.after(1, self.process_queue)
         n = self.queue.qsize()
         if n > self.ignore_backlog:
             self.messages_string.set('{0} Updates Queued'.format(n))
@@ -582,6 +580,12 @@ class BalanceGUI(tk.Frame):
         self.priceax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M:%S'))
         candlestick_ohlc(self.priceax, ohlc, width=1.0/1440.0,colorup='g',colordown='r')
         self.priceax.plot(self.trendlines[coin].t, self.trendlines[coin].emaslow,self.trendlines[coin].t, self.trendlines[coin].emafast)
+        textstr = coin
+
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        
+        self.priceax.text(0.05, 0.95, textstr, transform=self.priceax.transAxes, fontsize=14,
+        verticalalignment='top', bbox=props)
         self.pricecanvas.show()
 
         self.indicatorplot.clf()
@@ -596,7 +600,6 @@ class BalanceGUI(tk.Frame):
     def update_trades(self, msg):
         ''' Update balances whenever a partial execution occurs '''
         coin = msg['s'][:-len(self.trade_coin)]
-        savemsg = {self.headers[key] : value for key, value in msg.items()}
         filled = float(savemsg['cumulative_filled_quantity'])
         orderqty = float(savemsg['order_quantity'])
         side = savemsg['side']
@@ -605,7 +608,6 @@ class BalanceGUI(tk.Frame):
             self.trades_completed += 1
             self.trades_count.set(self.trades_completed)
         self.portfolio.set(coin, column='Event', value = '{0} {1}/{2} {3}'.format(side, filled, orderqty,datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
-        self.trades.append(savemsg)    
 
     def update_balance(self, msg):
         '''
@@ -836,39 +838,6 @@ class BalanceGUI(tk.Frame):
                                                  quantity=round_decimal(quantity, stepsize))
         if not dryrun:
             self.coins.loc[self.coins['coin'] == coin, 'last_placement'] = time.mktime(datetime.now().timetuple())
-            
-    def column_headers(self):
-        ''' define human readable aliases for the headers in trade execution reports. '''
-        return {'e': 'event_type',
-                'E': 'event_time',
-                's': 'symbol',
-                'c': 'client_order_id',
-                'S': 'side',
-                'o': 'type',
-                'O': 'unknown_1',
-                'f': 'time_in_force',
-                'q': 'order_quantity',
-                'p': 'order_price',
-                'P': 'stop_price',
-                'F': 'iceberg_quantity',
-                'g': 'ignore_1',
-                'C': 'original_client_order_id',
-                'x': 'current_execution_type',
-                'X': 'current_order_status',
-                'r': 'order_reject_reason',
-                'i': 'order_id',
-                'l': 'last_executed_quantity',
-                'z': 'cumulative_filled_quantity',
-                'Z': 'unknown_2',
-                'L': 'last_executed_price',
-                'n': 'commission_amount',
-                'N': 'commission_asset',
-                'T': 'transaction_time',
-                't': 'trade_id',
-                'I': 'ignore_2',
-                'w': 'order_working',
-                'm': 'maker_side',
-                'M': 'ignore_3'}
  
 def main():
     portfolio = 'allocation.csv'
