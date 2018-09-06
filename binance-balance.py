@@ -43,23 +43,23 @@ class TechnicalAnalysis:
     def __init__(self, symbol, client):
         self.t = deque()
         self.ohlc = deque()
-        self.ema26 = deque()
-        self.ema12 = deque()
+        self.emaslow = deque()
+        self.emafast = deque()
         self.macd = deque()
         self.macd9 = deque()
         self.signal = deque()
         
         data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_1MINUTE, '26 hours ago UTC'),dtype=np.float64)
-        ema26 = self.ema(26*60, data[:,4])
-        ema12 = self.ema(12*60, data[:,4])
-        macd = ema12 - ema26
+        emaslow = self.ema(13*60, data[:,4])
+        emafast = self.ema(3*60, data[:,4])
+        macd = emafast - emaslow
         macd9 = self.ema(9*60, macd)
         signal = macd - macd9
-        for row, e26, e12, m, m9, s in zip(data, ema26, ema12, macd, macd9, signal):
+        for row, eslow, efast, m, m9, s in zip(data, emaslow, emafast, macd, macd9, signal):
             self.t.append(mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)))
             self.ohlc.append([mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)),row[1], row[2], row[3], row[4]])
-            self.ema26.append(e26)
-            self.ema12.append(e12)
+            self.emaslow.append(eslow)
+            self.emafast.append(efast)
             self.macd.append(m)
             self.macd9.append(m9)
             self.signal.append(s)
@@ -96,17 +96,17 @@ class TechnicalAnalysis:
     def append(self, msg):
         self.t.popleft()
         self.ohlc.popleft()
-        self.ema26.popleft()
-        self.ema12.popleft()
+        self.emaslow.popleft()
+        self.emafast.popleft()
         self.macd.popleft()
         self.macd9.popleft()
         self.signal.popleft()
 
         self.t.append(mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)))
         self.ohlc.append([mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)),float(msg['k']['o']), float(msg['k']['h']), float(msg['k']['l']), float(msg['k']['c'])])
-        self.ema26.append(self.update_ema(26*60, self.ema26[-1], float(msg['k']['c'])))
-        self.ema12.append(self.update_ema(12*60, self.ema12[-1], float(msg['k']['c'])))
-        self.macd.append(self.ema12[-1] - self.ema26[-1])
+        self.emaslow.append(self.update_ema(13*60, self.emaslow[-1], float(msg['k']['c'])))
+        self.emafast.append(self.update_ema(3*60, self.emafast[-1], float(msg['k']['c'])))
+        self.macd.append(self.emafast[-1] - self.emaslow[-1])
         self.macd9.append(self.update_ema(9*60, self.macd9[-1], self.macd[-1]))
         self.signal.append(self.macd[-1] - self.macd9[-1])
         if self.trend == -1 and self.signal[-1] > 0:
@@ -236,14 +236,14 @@ class BalanceGUI(tk.Frame):
 
         self.plotcoin = tk.StringVar()
         self.plotcoin.set('ETH')
-        self.coinopts = tk.OptionMenu(self.analysis_frame, self.plotcoin, *[coin for coin in self.coins['coin'] if coin != self.trade_currency], command=self.update_plots)
-        self.coinopts.grid(row=0, column=1, stick=tk.E+tk.W+tk.N+tk.S)
+        self.coinopts = tk.OptionMenu(self.analysis_frame, self.plotcoin, *[coin for coin in self.coins['coin'] if coin != self.trade_currency], command=lambda(opt): self.update_plots)
+        self.coinopts.grid(row=0, column=1, sticky=tk.E+tk.W+tk.S+tk.N)
 
         self.plotind = tk.StringVar()
         self.plotind.set('MACD')
         options = ['MACD']
-        self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *[option for option in options], command=self.update_plots)
-        self.indopts.grid(row=1, column=1, stick=tk.E+tk.W+tk.N+tk.S)
+        self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *options, command=lambda(opt): self.update_plots)
+        self.indopts.grid(row=1, column=1, sticky=tk.E+tk.W+tk.S+tk.N)
 
         self.analysis_frame.grid(row=2,column=0,columnspan=2,sticky=tk.E+tk.W)
 
@@ -557,7 +557,7 @@ class BalanceGUI(tk.Frame):
                 self.get_msg()
         else:
             self.get_msg()
-            self.master.after_idle(self.process_queue)
+            self.master.after_idle(self.master.after, 1, self.process_queue)
         n = self.queue.qsize()
         if n > self.ignore_backlog:
             self.messages_string.set('{0} Updates Queued'.format(n))
@@ -580,8 +580,8 @@ class BalanceGUI(tk.Frame):
         self.priceax = self.priceplot.add_subplot(111)
         self.priceax.xaxis_date()
         self.priceax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M:%S'))
-        candlestick_ohlc(self.priceax, ohlc, width=0.005,colorup='g',colordown='r')
-        self.priceax.plot(self.trendlines[coin].t, self.trendlines[coin].ema26,self.trendlines[coin].t, self.trendlines[coin].ema12)
+        candlestick_ohlc(self.priceax, ohlc, width=1.0/1440.0,colorup='g',colordown='r')
+        self.priceax.plot(self.trendlines[coin].t, self.trendlines[coin].emaslow,self.trendlines[coin].t, self.trendlines[coin].emafast)
         self.pricecanvas.show()
 
         self.indicatorplot.clf()
