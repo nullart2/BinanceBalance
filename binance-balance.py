@@ -14,6 +14,7 @@ from twisted.internet import reactor
 import os.path
 import ConfigParser
 from collections import deque
+import itertools
 from scipy.signal import detrend
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2TkAgg
@@ -39,7 +40,7 @@ def round_decimal(num, decimal):
 
 
 class TechnicalAnalysis:
-    def __init__(self, symbol, client, slow_window, fast_window, signal_window):
+    def __init__(self, symbol, client, slow_window, fast_window, signal_window, rsi_window):
         self.t = deque()
         self.ohlc = deque()
         self.emaslow = deque()
@@ -47,41 +48,48 @@ class TechnicalAnalysis:
         self.macd = deque()
         self.macd9 = deque()
         self.signal = deque()
+        self.rsi = deque()
+        self.diffs = deque()
         self.slow_window = slow_window
         self.fast_window = fast_window
         self.signal_window = signal_window
+        self.rsi_window = rsi_window
         
-        data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_1MINUTE, '26 hours ago UTC'),dtype=np.float64)
+        data = np.array(client.get_historical_klines(symbol, KLINE_INTERVAL_5MINUTE, '{0} hours ago UTC'.format(self.slow_window/12)),dtype=np.float64)
         emaslow = self.ema(self.slow_window, data[:,4])
         emafast = self.ema(self.fast_window, data[:,4])
+        diffs = data[:,4] - data[:,1]
         macd = emafast - emaslow
         macd9 = self.ema(self.signal_window, macd)
         signal = macd - macd9
-        for row, eslow, efast, m, m9, s in zip(data, emaslow, emafast, macd, macd9, signal):
+        rsi = self.initial_rsi(self.rsi_window, diffs)
+        
+        for row, eslow, efast, m, m9, s, r, d in zip(data, emaslow, emafast, macd, macd9, signal, rsi, diffs):
             self.t.append(mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)))
             self.ohlc.append([mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)),row[1], row[2], row[3], row[4]])
             self.emaslow.append(eslow)
             self.emafast.append(efast)
+            self.diffs.append(d)
             self.macd.append(m)
             self.macd9.append(m9)
             self.signal.append(s)
-        self.get_initial_trend()
+            self.rsi.append(r)
+        self.trend = np.sign(self.signal[-1])
 
-    def get_initial_trend(self):
-        trend = 0
-        if self.macd[-1] > 0:
-            trend = 1
-        else:
-            trend = -1
-        s0 = self.signal[0]
-        for s in self.signal:
-            if s0 >= 0 and s < 0:
-                trend = -1
-            elif s0 <= 0 and s > 0:
-                trend = 1
-            s0 = s
-        self.trend = trend
+    def initial_rsi(self, period, data):
+        N = len(data)
+        rsi = np.zeros(N)
+        for i in range(period, N):
+            window = data[i-period:i]
+            rsi[i] = self.single_rsi(window)
+        return rsi
 
+    def single_rsi(self, data):
+        data = np.fromiter(data, dtype=np.float64)
+        ups = data[data>0]
+        downs = data[data<0]
+        return 100.0 - 100.0/(1.0 + np.average(ups)/np.average(-downs))
+        
     def ema(self, period, data):
         N = len(data)
         ema = np.zeros(N)
@@ -103,18 +111,19 @@ class TechnicalAnalysis:
         self.macd.popleft()
         self.macd9.popleft()
         self.signal.popleft()
+        self.diffs.popleft()
+        self.rsi.popleft()
 
         self.t.append(mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)))
         self.ohlc.append([mdates.date2num(datetime.fromtimestamp(int(float(msg['k']['T']))/1000)),float(msg['k']['o']), float(msg['k']['h']), float(msg['k']['l']), float(msg['k']['c'])])
+        self.diffs.append(float(msg['k']['c']) - float(msg['k']['o']))
         self.emaslow.append(self.update_ema(self.slow_window, self.emaslow[-1], float(msg['k']['c'])))
         self.emafast.append(self.update_ema(self.fast_window, self.emafast[-1], float(msg['k']['c'])))
         self.macd.append(self.emafast[-1] - self.emaslow[-1])
         self.macd9.append(self.update_ema(self.signal_window, self.macd9[-1], self.macd[-1]))
         self.signal.append(self.macd[-1] - self.macd9[-1])
-        if self.trend == -1 and self.signal[-1] > 0:
-            self.trend = 1
-        elif self.trend == 1 and self.signal[-1] < 0:
-            self.trend = -1
+        self.rsi.append(self.single_rsi(itertools.islice(self.diffs, len(self.diffs)-self.rsi_window, len(self.diffs))))
+        self.trend = np.sign(self.signal[-1])
     
 class BalanceGUI(tk.Frame):
     def __init__(self, parent, coins):
@@ -241,7 +250,7 @@ class BalanceGUI(tk.Frame):
 
         self.plotind = tk.StringVar()
         self.plotind.set('MACD')
-        options = ['MACD']
+        options = ['MACD', 'RSI']
         self.indopts = tk.OptionMenu(self.analysis_frame, self.plotind, *options)
         self.indopts.grid(row=1, column=1, sticky=tk.E+tk.W+tk.S+tk.N)
 
@@ -275,6 +284,7 @@ class BalanceGUI(tk.Frame):
         self.slow_window = int(config.get('trades', 'slow_window'))
         self.fast_window = int(config.get('trades', 'fast_window'))
         self.signal_window = int(config.get('trades', 'signal_window'))
+        self.rsi_window = int(config.get('trades', 'rsi_window'))
         self.ignore_backlog = int(config.get('websockets', 'ignore_backlog'))
         
         
@@ -378,7 +388,7 @@ class BalanceGUI(tk.Frame):
             self.updatetext.set('Fetching {0} price history'.format(coin))
             self.progresslabel.update()
             if coin != self.trade_currency:
-                self.trendlines[coin] = TechnicalAnalysis(coin+self.trade_currency, self.client, self.slow_window, self.fast_window, self.signal_window)
+                self.trendlines[coin] = TechnicalAnalysis(coin+self.trade_currency, self.client, self.slow_window, self.fast_window, self.signal_window, self.rsi_window)
             
     def start_websockets(self):
         '''
@@ -394,7 +404,7 @@ class BalanceGUI(tk.Frame):
         self.sockets = {}
         for symbol in symbols:
             self.sockets[symbol] = self.bm.start_symbol_ticker_socket(symbol, self.queue_msg)
-            self.sockets[symbol+'kline'] = self.bm.start_kline_socket(symbol, self.queue_msg)
+            self.sockets[symbol+'kline'] = self.bm.start_kline_socket(symbol, self.queue_msg, interval=KLINE_INTERVAL_5MINUTE)
         self.sockets['user'] = self.bm.start_user_socket(self.queue_msg)
         self.sockets['exchange_rate'] = self.bm.start_symbol_ticker_socket('BTCUSDT', self.queue_msg)
             
@@ -588,11 +598,16 @@ class BalanceGUI(tk.Frame):
         verticalalignment='top', bbox=props)
         self.pricecanvas.show()
 
+        ind = self.plotind.get()
         self.indicatorplot.clf()
         self.indax = self.indicatorplot.add_subplot(111)
         self.indax.xaxis_date()
         self.indax.xaxis.set_major_formatter(mdates.DateFormatter('%d-%H:%M:%S'))
-        self.indax.plot(self.trendlines[coin].t, self.trendlines[coin].signal)
+        if ind == 'MACD':
+            self.indax.plot(self.trendlines[coin].t, self.trendlines[coin].signal)
+        elif ind =='RSI':
+            self.indax.plot(self.trendlines[coin].t, self.trendlines[coin].rsi)
+            self.indax.set_ylim(bottom=0, top=100)
         self.indax.axhline(y=0)
         self.indicatorcanvas.show()
         
