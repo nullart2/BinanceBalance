@@ -39,6 +39,36 @@ def round_decimal(num, decimal):
     return '{0:.8f}'.format(x).rstrip('0').rstrip('.')
 
 
+class RelativeStrengthIndex:
+    def __init__(self, ohlc, period):
+        self.period = period
+        self.diffs = ohlc[:,4] - ohlc[:,1]
+        self.rsi = self.initial_rsi(diffs)
+        
+    def initial_rsi(self, diffs):
+        N = len(diffs)
+        rsi = np.zeros(N)
+        for i in range(self.period, N):
+            window = diffs[i-self.period:i]
+            rsi[i] = self.single_rsi(window)
+        return rsi
+
+    def single_rsi(self, diffs):
+        ups = data[data>0]
+        downs = data[data<0]
+        if ups and downs:
+            rsi = 100.0 - 100.0/(1.0 + np.average(ups)/np.average(-downs))
+        elif not ups:
+            rsi = 0
+        elif not downs:
+            rsi = 100
+        return rsi
+
+    def update_rsi(self, kline):
+        self.diffs = self.diffs.append(float(kline['k']['c']) - float(kline['k']['o']))[1:]
+        self.rsi = self.rsi.append(self.single_rsi(self.diffs[-self.period:]))[1:]
+        
+
 class TechnicalAnalysis:
     def __init__(self, symbol, client, slow_window, fast_window, signal_window, rsi_window):
         self.t = deque()
@@ -62,7 +92,7 @@ class TechnicalAnalysis:
         macd = emafast - emaslow
         macd9 = self.ema(self.signal_window, macd)
         signal = macd - macd9
-        rsi = self.initial_rsi(self.rsi_window, diffs)
+        rsi = self.initial_rsi(diffs)
         
         for row, eslow, efast, m, m9, s, r, d in zip(data, emaslow, emafast, macd, macd9, signal, rsi, diffs):
             self.t.append(mdates.date2num(datetime.fromtimestamp(int(row[0])/1000)))
@@ -76,11 +106,11 @@ class TechnicalAnalysis:
             self.rsi.append(r)
         self.trend = np.sign(self.signal[-1])
 
-    def initial_rsi(self, period, data):
-        N = len(data)
+    def initial_rsi(self, diffs):
+        N = len(diffs)
         rsi = np.zeros(N)
-        for i in range(period, N):
-            window = data[i-period:i]
+        for i in range(self.rsi_window, N):
+            window = diffs[i-self.rsi_window:i]
             rsi[i] = self.single_rsi(window)
         return rsi
 
@@ -615,9 +645,9 @@ class BalanceGUI(tk.Frame):
     def update_trades(self, msg):
         ''' Update balances whenever a partial execution occurs '''
         coin = msg['s'][:-len(self.trade_coin)]
-        filled = float(savemsg['cumulative_filled_quantity'])
-        orderqty = float(savemsg['order_quantity'])
-        side = savemsg['side']
+        filled = float(msg['z'])
+        orderqty = float(msg['q'])
+        side = savemsg['S']
         if filled >= orderqty:
             self.coins.loc[self.coins['coin'] == coin, 'last_execution'] = time.mktime(datetime.now().timetuple())
             self.trades_completed += 1
